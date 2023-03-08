@@ -1,0 +1,88 @@
+pipeline {
+    agent any
+    
+    stages {
+        stage('Init') {
+            steps {
+                echo 'Initializing..'
+                slackSend color: "#439FE0", message: "Build Started: ${env.JOB_NAME} ${env.BUILD_NUMBER}"
+                echo "Running ${env.BUILD_ID} on ${env.JENKINS_URL}"
+            }
+        }
+        stage('Git') {
+            steps {
+                echo 'Checkout..'
+                checkout([$class: 'GitSCM', branches: [[name: '*/origin']], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[credentialsId: '953dbdc8-eb76-41aa-a41f-33341326131f', url: 'https://github.com/Grigorio-Makario/index.git']]])
+            }
+        }
+        stage('Build') {
+            steps {
+                echo 'Building..'
+                sh 'docker run --name docker-nginx -p 9889:80 -d -v /var/lib/jenkins/workspace/nginx:/usr/share/nginx/html nginx'
+            }
+        }
+       stage('Check HTTP response code') {
+           steps {
+               script{
+                    cmd = """
+                          curl --write-out %{http_code} --silent --output /dev/null \
+                          'http://localhost:9889' 
+                          """
+                    status_code = sh(script: cmd, returnStdout: true).trim()
+                    echo "HTTP response status code: ${status_code}"
+                    
+                    if (status_code != "200") {
+                    slackSend color: "#439FE0", message: "Error deploy! URL status different of 200: ${env.JOB_NAME} ${env.BUILD_NUMBER}"    
+                    error('URL status different of 200. Exiting script.')
+                     } 
+                }
+            }
+        }
+
+       stage('Check md5sum') {
+           steps {
+               script{
+                    cmd = '''
+                         md5sum  /var/lib/jenkins/workspace/nginx/index.html |  awk '{print $1}'
+                          '''
+                    md_sum = sh(script: cmd, returnStdout: true).trim()
+                    echo "Check md5sum pulled file index.html: ${md_sum}"
+                    cmd = '''
+                          docker exec docker-nginx  md5sum  /usr/share/nginx/html/index.html | awk '{print $1}'
+                          '''
+                    md_sum_ni = sh(script: cmd, returnStdout: true).trim()          
+                    echo "Check md5sum nginx file index.html: ${md_sum_ni}"
+                    
+                    if (md_sum != md_sum_ni) {
+                    slackSend color: "#439FE0", message: "Error deploy! Different md5sum hash: ${env.JOB_NAME} ${env.BUILD_NUMBER}"    
+                    error('different md5sum hash. Exiting script.')
+      } 
+    }
+  }
+}
+       stage('Cleanup') {
+           steps {
+               echo 'Cleaning..'
+               sh 'docker stop docker-nginx && docker rm docker-nginx'
+               slackSend color: "#439FE0", message: "Build deployed successfully: ${env.JOB_NAME} ${env.BUILD_NUMBER}"
+            }
+        }
+  }
+  
+  post{
+        failure{
+            slackSend(message: "${custom_msg()}")
+        }
+    }
+}
+
+def custom_msg()
+{
+  def JENKINS_URL= "http://51.250.82.99:8080"
+  def JOB_NAME = env.JOB_NAME
+  def BUILD_ID= env.BUILD_ID
+  def JENKINS_LOG= "FAILED: Job [${env.JOB_NAME}] Logs path: ${JENKINS_URL}/job/${JOB_NAME}/${BUILD_ID}/consoleText"
+  return JENKINS_LOG
+}
+
+
